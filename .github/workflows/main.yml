@@ -28,10 +28,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install Dependencies
-        run: pip install openai
-
-      - name: Run Embedded AI Bot Logic
+      - name: Run Native AI Bot Logic
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -44,43 +41,45 @@ jobs:
           import json
           import subprocess
           import urllib.request
-          from openai import OpenAI
+          from urllib.error import HTTPError
 
           def call_openrouter(system_prompt, user_prompt):
               api_key = os.getenv("OPENROUTER_API_KEY")
               if not api_key:
                   return "⚠️ Error: The OPENROUTER_API_KEY secret is missing from repo settings."
 
-              # Using explicit trailing slash configuration to satisfy the OpenAI SDK router format
-              client = OpenAI(
-                  base_url="https://openrouter.ai",
-                  api_key=api_key,
-                  default_headers={
-                      "HTTP-Referer": "https://github.com", 
-                      "X-Title": "GitHub Actions Automation Bot"
-                  }
-              )
-              
+              # If your account balance is $0.00, replace this model string with: "meta-llama/llama-3-8b-instruct:free"
+              payload = {
+                  "model": "deepseek/deepseek-chat",
+                  "messages": [
+                      {"role": "system", "content": system_prompt},
+                      {"role": "user", "content": user_prompt}
+                  ]
+              }
+
+              url = "https://openrouter.ai"
+              headers = {
+                  "Authorization": f"Bearer {api_key}",
+                  "Content-Type": "application/json",
+                  "HTTP-Referer": "https://github.com",
+                  "X-Title": "GitHub Actions Automation Bot"
+              }
+
               try:
-                  completion = client.chat.completions.create(
-                      model="deepseek/deepseek-chat",
-                      messages=[
-                          {"role": "system", "content": system_prompt},
-                          {"role": "user", "content": user_prompt}
-                      ]
-                  )
-                  
-                  # If OpenRouter still returns a string, handle it gracefully
-                  if isinstance(completion, str):
-                      if "<title>" in completion.lower() or "<script" in completion.lower():
-                          return "⚠️ OpenRouter API Error: The SDK routed to the HTML homepage instead of the API endpoint. Please verify API credits and key permissions."
-                      return f"⚠️ OpenRouter Error: {completion}"
-                      
-                  return completion.choices.message.content
-                  
+                  data = json.dumps(payload).encode("utf-8")
+                  req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+                  with urllib.request.urlopen(req) as response:
+                      res_data = json.loads(response.read().decode("utf-8"))
+                      return res_data["choices"][0]["message"]["content"]
+              except HTTPError as e:
+                  err_msg = e.read().decode("utf-8")
+                  try:
+                      err_json = json.loads(err_msg)
+                      return f"⚠️ OpenRouter API Error ({e.code}): {err_json.get('error', {}).get('message', err_msg)}"
+                  except:
+                      return f"⚠️ OpenRouter Authorization/Billing Error ({e.code}). Please check your API credits balance or key permissions."
               except Exception as e:
-                  print(f"❌ Exception during OpenRouter call: {e}")
-                  return f"⚠️ Script Error calling OpenRouter: {e}"
+                  return f"⚠️ Request execution failed: {e}"
 
           def post_github_comment(url, text):
               headers = {
@@ -102,7 +101,6 @@ jobs:
               try:
                   pr_diff = subprocess.check_output(["git", "diff", f"{base_branch}...HEAD"], text=True)
               except Exception as e:
-                  print(f"Failed to get diff: {e}")
                   return
               if not pr_diff.strip():
                   return
