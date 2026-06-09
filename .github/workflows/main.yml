@@ -47,22 +47,37 @@ jobs:
           from openai import OpenAI
 
           def call_openrouter(system_prompt, user_prompt):
+              api_key = os.getenv("OPENROUTER_API_KEY")
+              if not api_key:
+                  return "⚠️ Error: The OPENROUTER_API_KEY secret is missing from repo settings."
+
               client = OpenAI(
                   base_url="https://openrouter.ai",
-                  api_key=os.getenv("OPENROUTER_API_KEY"),
+                  api_key=api_key,
                   default_headers={
                       "HTTP-Referer": "https://github.com", 
                       "X-Title": "GitHub Actions Automation Bot"
                   }
               )
-              completion = client.chat.completions.create(
-                  model="deepseek/deepseek-chat",
-                  messages=[
-                      {"role": "system", "content": system_prompt},
-                      {"role": "user", "content": user_prompt}
-                  ]
-              )
-              return completion.choices.message.content
+              
+              try:
+                  completion = client.chat.completions.create(
+                      model="deepseek/deepseek-chat",
+                      messages=[
+                          {"role": "system", "content": system_prompt},
+                          {"role": "user", "content": user_prompt}
+                      ]
+                  )
+                  
+                  if isinstance(completion, str):
+                      print(f"❌ OpenRouter returned string error: {completion}")
+                      return f"⚠️ OpenRouter Error: {completion}"
+                      
+                  return completion.choices[0].message.content
+                  
+              except Exception as e:
+                  print(f"❌ Exception during OpenRouter call: {e}")
+                  return f"⚠️ Script Error calling OpenRouter: {e}"
 
           def post_github_comment(url, text):
               headers = {
@@ -77,24 +92,25 @@ jobs:
                       if response.status in [200, 201]:
                           print("Successfully posted message to GitHub.")
               except Exception as e:
-                  print(f"Error posting to GitHub: {e}")
+                  print(f"Error posting comment: {e}")
 
           def handle_pull_request(payload):
               base_branch = f"origin/{payload['pull_request']['base']['ref']}"
               try:
                   pr_diff = subprocess.check_output(["git", "diff", f"{base_branch}...HEAD"], text=True)
               except Exception as e:
+                  print(f"Failed to get diff: {e}")
                   return
               if not pr_diff.strip():
                   return
-              sys_prompt = "You are an expert engineer. Review this code diff. Highlight bugs or bad logic."
+              sys_prompt = "You are an expert engineer. Review this code diff. Highlight bugs or bad logic. Keep it punchy."
               feedback = call_openrouter(sys_prompt, f"Review this diff:\n\n{pr_diff}")
               post_github_comment(payload["pull_request"]["comments_url"], f"🤖 **PR Code Review:**\n\n{feedback}")
 
           def handle_issue(payload):
               issue_title = payload["issue"]["title"]
               issue_body = payload["issue"]["body"] or "No description provided."
-              sys_prompt = "You are a repository assistant. Analyze the issue. Provide helpful debugging steps."
+              sys_prompt = "You are a repository assistant. Analyze the issue. Provide helpful debugging steps or a fix scenario."
               user_prompt = f"Issue Title: {issue_title}\nIssue Description:\n{issue_body}"
               answer = call_openrouter(sys_prompt, user_prompt)
               post_github_comment(payload["issue"]["comments_url"], f"🤖 **AI Issue Assistant:**\n\n{answer}")
@@ -107,11 +123,11 @@ jobs:
                   if not code_to_fix:
                       post_github_comment(comments_url, "❌ Please provide code context after the `/fix` command.")
                       return
-                  sys_prompt = "You are a code generation machine. Refactor or fix the provided code snippet. Output ONLY code blocks."
+                  sys_prompt = "You are a code generation machine. Refactor or fix the provided code snippet. Output ONLY markdown code blocks."
                   fixed_code = call_openrouter(sys_prompt, code_to_fix)
                   post_github_comment(comments_url, f"🤖 **AI Refactor Request:**\n\n{fixed_code}")
               elif "@ai-bot" in comment_body.lower():
-                  sys_prompt = "You are an AI developer assistant. Reply helpfully."
+                  sys_prompt = "You are an AI developer assistant. Reply politely and helpfully to the user's question."
                   reply = call_openrouter(sys_prompt, comment_body)
                   post_github_comment(comments_url, f"🤖 **AI Reply:**\n\n{reply}")
 
