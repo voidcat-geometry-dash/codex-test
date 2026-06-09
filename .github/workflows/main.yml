@@ -48,9 +48,9 @@ jobs:
               if not api_key:
                   return "⚠️ Error: The OPENROUTER_API_KEY secret is missing from repo settings."
 
-              # If your account balance is $0.00, replace this model string with: "meta-llama/llama-3-8b-instruct:free"
+              # Switched to OpenRouter's free Owl Alpha model
               payload = {
-                  "model": "deepseek/deepseek-chat",
+                  "model": "openrouter/owl-alpha",
                   "messages": [
                       {"role": "system", "content": system_prompt},
                       {"role": "user", "content": user_prompt}
@@ -77,7 +77,7 @@ jobs:
                       err_json = json.loads(err_msg)
                       return f"⚠️ OpenRouter API Error ({e.code}): {err_json.get('error', {}).get('message', err_msg)}"
                   except:
-                      return f"⚠️ OpenRouter Authorization/Billing Error ({e.code}). Please check your API credits balance or key permissions."
+                      return f"⚠️ OpenRouter API Error ({e.code}). Please check your API key validity or rate limits."
               except Exception as e:
                   return f"⚠️ Request execution failed: {e}"
 
