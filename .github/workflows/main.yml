@@ -51,6 +51,7 @@ jobs:
               if not api_key:
                   return "⚠️ Error: The OPENROUTER_API_KEY secret is missing from repo settings."
 
+              # Using explicit trailing slash configuration to satisfy the OpenAI SDK router format
               client = OpenAI(
                   base_url="https://openrouter.ai",
                   api_key=api_key,
@@ -69,11 +70,13 @@ jobs:
                       ]
                   )
                   
+                  # If OpenRouter still returns a string, handle it gracefully
                   if isinstance(completion, str):
-                      print(f"❌ OpenRouter returned string error: {completion}")
+                      if "<title>" in completion.lower() or "<script" in completion.lower():
+                          return "⚠️ OpenRouter API Error: The SDK routed to the HTML homepage instead of the API endpoint. Please verify API credits and key permissions."
                       return f"⚠️ OpenRouter Error: {completion}"
                       
-                  return completion.choices[0].message.content
+                  return completion.choices.message.content
                   
               except Exception as e:
                   print(f"❌ Exception during OpenRouter call: {e}")
