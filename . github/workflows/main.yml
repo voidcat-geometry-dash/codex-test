@@ -15,7 +15,6 @@ permissions:
 
 jobs:
   ai-bot:
-    # Skip if the comment was made by a bot to prevent infinite AI loops
     if: ${{ github.event.issue.user.type != 'Bot' && github.event.comment.user.type != 'Bot' }}
     runs-on: ubuntu-latest
     steps:
@@ -29,13 +28,117 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install Dependencies
-        run: pip install openai
-
-      - name: Run AI Bot Logic
+      - name: Run Native AI Bot Logic
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           GITHUB_EVENT_PATH: ${{ github.event_path }}
-        run: python .github/scripts/bot_brain.py
+        shell: python
+        run: |
+          import os
+          import sys
+          import json
+          import subprocess
+          import urllib.request
+          from urllib.error import HTTPError
+
+          def call_openrouter(system_prompt, user_prompt):
+              api_key = os.getenv("OPENROUTER_API_KEY")
+              if not api_key:
+                  return "⚠️ Error: The OPENROUTER_API_KEY secret is missing from repo settings."
+
+              # If your account balance is $0.00, replace this model string with: "meta-llama/llama-3-8b-instruct:free"
+              payload = {
+                  "model": "deepseek/deepseek-chat",
+                  "messages": [
+                      {"role": "system", "content": system_prompt},
+                      {"role": "user", "content": user_prompt}
+                  ]
+              }
+
+              url = "https://openrouter.ai"
+              headers = {
+                  "Authorization": f"Bearer {api_key}",
+                  "Content-Type": "application/json",
+                  "HTTP-Referer": "https://github.com",
+                  "X-Title": "GitHub Actions Automation Bot"
+              }
+
+              try:
+                  data = json.dumps(payload).encode("utf-8")
+                  req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+                  with urllib.request.urlopen(req) as response:
+                      res_data = json.loads(response.read().decode("utf-8"))
+                      return res_data["choices"][0]["message"]["content"]
+              except HTTPError as e:
+                  err_msg = e.read().decode("utf-8")
+                  try:
+                      err_json = json.loads(err_msg)
+                      return f"⚠️ OpenRouter API Error ({e.code}): {err_json.get('error', {}).get('message', err_msg)}"
+                  except:
+                      return f"⚠️ OpenRouter Authorization/Billing Error ({e.code}). Please check your API credits balance or key permissions."
+              except Exception as e:
+                  return f"⚠️ Request execution failed: {e}"
+
+          def post_github_comment(url, text):
+              headers = {
+                  "Authorization": f"Bearer {os.getenv('GITHUB_TOKEN')}",
+                  "Accept": "application/vnd.github.v3+json",
+                  "User-Agent": "GitHub-Actions-AI-Bot"
+              }
+              data = json.dumps({"body": text}).encode('utf-8')
+              req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+              try:
+                  with urllib.request.urlopen(req) as response:
+                      if response.status in [200, 201]:
+                          print("Successfully posted message to GitHub.")
+              except Exception as e:
+                  print(f"Error posting comment: {e}")
+
+          def handle_pull_request(payload):
+              base_branch = f"origin/{payload['pull_request']['base']['ref']}"
+              try:
+                  pr_diff = subprocess.check_output(["git", "diff", f"{base_branch}...HEAD"], text=True)
+              except Exception as e:
+                  return
+              if not pr_diff.strip():
+                  return
+              sys_prompt = "You are an expert engineer. Review this code diff. Highlight bugs or bad logic. Keep it punchy."
+              feedback = call_openrouter(sys_prompt, f"Review this diff:\n\n{pr_diff}")
+              post_github_comment(payload["pull_request"]["comments_url"], f"🤖 **PR Code Review:**\n\n{feedback}")
+
+          def handle_issue(payload):
+              issue_title = payload["issue"]["title"]
+              issue_body = payload["issue"]["body"] or "No description provided."
+              sys_prompt = "You are a repository assistant. Analyze the issue. Provide helpful debugging steps or a fix scenario."
+              user_prompt = f"Issue Title: {issue_title}\nIssue Description:\n{issue_body}"
+              answer = call_openrouter(sys_prompt, user_prompt)
+              post_github_comment(payload["issue"]["comments_url"], f"🤖 **AI Issue Assistant:**\n\n{answer}")
+
+          def handle_comment(payload):
+              comment_body = payload["comment"]["body"].strip()
+              comments_url = payload["issue"]["comments_url"]
+              if comment_body.startswith("/fix"):
+                  code_to_fix = comment_body.replace("/fix", "").strip()
+                  if not code_to_fix:
+                      post_github_comment(comments_url, "❌ Please provide code context after the `/fix` command.")
+                      return
+                  sys_prompt = "You are a code generation machine. Refactor or fix the provided code snippet. Output ONLY markdown code blocks."
+                  fixed_code = call_openrouter(sys_prompt, code_to_fix)
+                  post_github_comment(comments_url, f"🤖 **AI Refactor Request:**\n\n{fixed_code}")
+              elif "@ai-bot" in comment_body.lower():
+                  sys_prompt = "You are an AI developer assistant. Reply politely and helpfully to the user's question."
+                  reply = call_openrouter(sys_prompt, comment_body)
+                  post_github_comment(comments_url, f"🤖 **AI Reply:**\n\n{reply}")
+
+          event_name = os.getenv("GITHUB_EVENT_NAME")
+          with open(os.getenv("GITHUB_EVENT_PATH"), "r") as f:
+              event_payload = json.load(f)
+
+          if event_name == "pull_request":
+              handle_pull_request(event_payload)
+          elif event_name == "issues":
+              handle_issue(event_payload)
+          elif event_name == "issue_comment":
+              handle_comment(event_payload)
