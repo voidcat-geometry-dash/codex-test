@@ -1,0 +1,99 @@
+name: AI Pull Request Reviewer
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  pull-requests: write # Allows the bot to leave comments
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. Check out the repository code
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetches all history so we can generate a diff
+
+      # 2. Set up Python environment
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # 3. Install required dependencies
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install openai
+
+      # 4. Run the Python script to fetch the diff, call OpenRouter, and comment
+      - name: Run AI Reviewer
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Provided automatically by GitHub
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO_NAME: ${{ github.repository }}
+        shell: python
+        run: |
+          import os
+          import subprocess
+          from openai import OpenAI
+
+          # 1. Fetch git diff against the target branch
+          base_branch = "origin/${{ github.event.pull_request.base.ref }}"
+          try:
+              pr_diff = subprocess.check_output(["git", "diff", f"{base_branch}...HEAD"], text=True)
+          except Exception as e:
+              print(f"Error fetching diff: {e}")
+              exit(1)
+
+          if not pr_diff.strip():
+              print("No changes found in this PR.")
+              exit(0)
+
+          # 2. Call OpenRouter
+          client = OpenAI(
+              base_url="https://openrouter.ai",
+              api_key=os.getenv("OPENROUTER_API_KEY")
+          )
+
+          # Using deepseek/deepseek-chat as a highly cost-efficient code expert
+          completion = client.chat.completions.create(
+              model="deepseek/deepseek-chat", 
+              messages=[
+                  {
+                      "role": "system", 
+                      "content": "You are a senior software engineer conducting a strict Pull Request review. Analyze the git diff. Identify bugs, architectural flaws, security issues, or clean code violations. Provide short, bulleted actionable fixes."
+                  },
+                  {
+                      "role": "user", 
+                      "content": f"Review this git diff:\n\n{pr_diff}"
+                  }
+              ]
+          )
+          ai_feedback = completion.choices.message.content
+
+          # 3. Post comment back to the Pull Request using OpenAI client or plain request
+          import urllib.request
+          import json
+
+          repo = os.getenv("REPO_NAME")
+          pr_num = os.getenv("PR_NUMBER")
+          url = f"https://github.com{repo}/issues/{pr_num}/comments"
+          
+          headers = {
+              "Authorization": f"Bearer {os.getenv('GITHUB_TOKEN')}",
+              "Accept": "application/vnd.github.v3+json",
+              "User-Agent": "GitHub-Actions-Robot"
+          }
+          data = json.dumps({"body": f"🤖 **AI Code Review (via OpenRouter):**\n\n{ai_feedback}"}).encode('utf-8')
+          
+          req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+          with urllib.request.urlopen(req) as response:
+              if response.status == 201:
+                  print("Review posted successfully!")
+              else:
+                  print(f"Failed to post comment: {response.status}")
